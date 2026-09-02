@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont
+from PySide6.QtCore import QMimeData, QThread, Qt, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -47,6 +47,9 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: SearchWorker | None = None
         self._last_output_directory: Path | None = None
+        self._preview_signature: tuple[str, str, str] | None = None
+        self._preview_data = None
+        self.setAcceptDrops(True)
         self._build_ui()
         self._apply_style()
         if initial_file:
@@ -100,11 +103,14 @@ class MainWindow(QMainWindow):
         source_layout = QGridLayout(source_group)
         self.file_edit = QLineEdit()
         self.file_edit.setPlaceholderText("选择 .xlsx 文件")
+        self.file_edit.textChanged.connect(self._invalidate_preview)
         browse_file = QPushButton("浏览…")
         browse_file.clicked.connect(self._browse_file)
         self.sheet_combo = QComboBox()
+        self.sheet_combo.currentIndexChanged.connect(self._invalidate_preview)
         self.range_edit = QLineEdit("E")
         self.range_edit.setPlaceholderText("例如 E、5 或 E2:E500")
+        self.range_edit.textChanged.connect(self._invalidate_preview)
         source_layout.addWidget(QLabel("文件"), 0, 0)
         source_layout.addWidget(self.file_edit, 0, 1)
         source_layout.addWidget(browse_file, 0, 2)
@@ -257,7 +263,12 @@ class MainWindow(QMainWindow):
             self._show_error("无法读取工作表", str(exc))
             return
         self.sheet_combo.clear()
-        self.sheet_combo.addItems(sheets)
+        if len(sheets) == 1:
+            self.sheet_combo.addItem(sheets[0], sheets[0])
+        else:
+            self.sheet_combo.addItem("请选择工作表…", "")
+            for sheet in sheets:
+                self.sheet_combo.addItem(sheet, sheet)
         self.status_label.setText(f"已读取 {len(sheets)} 个工作表")
 
     def _browse_output(self) -> None:
@@ -286,6 +297,21 @@ class MainWindow(QMainWindow):
             )
             for column, value in enumerate(values):
                 self.preview_table.setItem(row, column, QTableWidgetItem(value))
+        for skipped in preview.skipped:
+            row = self.preview_table.rowCount()
+            self.preview_table.insertRow(row)
+            values = (
+                skipped.address,
+                skipped.raw_value,
+                "",
+                "已跳过",
+                "",
+                skipped.reason,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setForeground(Qt.GlobalColor.darkRed)
+                self.preview_table.setItem(row, column, item)
         safe_text = "可安全输出" if preview.safety.safe_to_write else "仅允许分析，禁止输出"
         self.preview_summary.setText(
             f"范围 {preview.range_text}：{len(preview.cells)} 条可用，"
@@ -294,6 +320,8 @@ class MainWindow(QMainWindow):
         )
         self.status_label.setText("预览完成")
         self.tabs.setCurrentIndex(0)
+        self._preview_signature = (str(source.resolve()), sheet, range_text.upper())
+        self._preview_data = preview
 
     def _source_fields(self) -> tuple[Path, str, str]:
         file_text = self.file_edit.text().strip()
@@ -304,7 +332,7 @@ class MainWindow(QMainWindow):
             raise ValueError("当前版本仅支持 .xlsx 文件")
         if not source.is_file():
             raise ValueError("选择的文件不存在")
-        sheet = self.sheet_combo.currentText().strip()
+        sheet = (self.sheet_combo.currentData() or self.sheet_combo.currentText()).strip()
         if not sheet:
             raise ValueError("请选择工作表")
         range_text = self.range_edit.text().strip()
@@ -326,6 +354,23 @@ class MainWindow(QMainWindow):
                 if output_text
                 else source.parent / "ExcelAccountant输出"
             )
+            signature = (str(source.resolve()), sheet, range_text.upper())
+            if self._preview_signature != signature or self._preview_data is None:
+                raise ValueError("请先点击“预览读取结果”，确认当前数据后再搜索")
+            review_items = [
+                item for item in self._preview_data.skipped if item.reason != "表头"
+            ]
+            if review_items:
+                answer = QMessageBox.question(
+                    self,
+                    "确认忽略异常数据",
+                    f"当前有 {len(review_items)} 个非表头单元格将不参与搜索，"
+                    "请在预览表格中核对原因。\n\n确定继续吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
             request = SearchRequest(
                 source_path=source,
                 sheet=sheet,
@@ -334,7 +379,7 @@ class MainWindow(QMainWindow):
                 output_directory=output_directory,
                 max_exact_solutions=self.solution_count.value(),
                 exact_time_limit_seconds=float(self.timeout_seconds.value()),
-                max_approximate_solutions=3,
+                max_approximate_solutions=5,
                 approximate_time_limit_seconds=float(
                     min(30, self.timeout_seconds.value())
                 ),
@@ -463,6 +508,30 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
+
+    def _invalidate_preview(self, *_args) -> None:
+        self._preview_signature = None
+        self._preview_data = None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
+        if self._xlsx_from_mime(event.mimeData()) is not None:
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt API
+        path = self._xlsx_from_mime(event.mimeData())
+        if path is not None:
+            self.file_edit.setText(str(path))
+            self._load_sheets()
+            event.acceptProposedAction()
+
+    @staticmethod
+    def _xlsx_from_mime(mime_data: QMimeData) -> Path | None:
+        for url in mime_data.urls():
+            if url.isLocalFile():
+                path = Path(url.toLocalFile())
+                if path.suffix.lower() == ".xlsx" and path.is_file():
+                    return path
+        return None
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         if self._worker is not None and self._thread is not None:
