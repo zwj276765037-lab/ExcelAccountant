@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excel-accountant"
+version = "0.1.0"
+description = "Local, exact-decimal XLSX reconciliation tool"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "openpyxl==3.1.5",
+  "ortools==9.15.6755",
+  "PySide6==6.11.2",
+]
+
+[project.scripts]
+excel-accountant = "excel_accountant.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]
+testpaths = ["tests"]
