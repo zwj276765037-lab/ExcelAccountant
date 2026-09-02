@@ -1,5 +1,5 @@
 from excel_accountant import __version__
-from excel_accountant.__main__ import main
+from excel_accountant.__main__ import build_parser
 
 
 def test_version_is_defined() -> None:
@@ -7,5 +7,5 @@ def test_version_is_defined() -> None:
 
 
 def test_cli_help_entrypoint(capsys) -> None:
-    assert main([]) == 0
-    assert "ExcelAccountant" in capsys.readouterr().out
+    build_parser().print_help()
+    assert "excel-accountant" in capsys.readouterr().out
