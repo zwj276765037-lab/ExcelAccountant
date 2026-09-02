@@ -10,6 +10,7 @@ from excel_accountant.models import SolveStatus
 from excel_accountant.service import (
     SearchInputError,
     SearchRequest,
+    export_exact_solutions,
     parse_targets,
     run_search,
 )
@@ -51,7 +52,7 @@ def test_parse_targets_rejects_empty_input() -> None:
         parse_targets(("", "  "))
 
 
-def test_exact_workflow_writes_verified_files(tmp_path: Path) -> None:
+def test_exact_search_waits_for_selection_before_export(tmp_path: Path) -> None:
     source = tmp_path / "source.xlsx"
     _workbook(source, ("1.10", "2.20", "3.30", "4.40"))
     progress: list[str] = []
@@ -62,9 +63,27 @@ def test_exact_workflow_writes_verified_files(tmp_path: Path) -> None:
 
     assert report.exact_outcome.exact_solutions
     assert report.approximate_outcome is None
-    assert report.artifacts
-    assert all(artifact.path.exists() for artifact in report.artifacts)
-    assert "exact" in progress and "write" in progress and progress[-1] == "done"
+    assert not report.artifacts
+    assert not (tmp_path / "output").exists()
+    assert "exact" in progress and progress[-1] == "done"
+
+    artifacts = export_exact_solutions(
+        report,
+        (1,),
+        tmp_path / "selected-output",
+    )
+    assert len(artifacts) == 1
+    assert artifacts[0].scheme_number == 2
+    assert artifacts[0].path.exists()
+
+
+def test_export_rejects_empty_selection(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    _workbook(source, ("1.00", "2.00"))
+    report = run_search(_request(source, tmp_path / "output", "3.00"))
+
+    with pytest.raises(SearchInputError, match="勾选"):
+        export_exact_solutions(report, (), tmp_path / "selected-output")
 
 
 def test_no_exact_solution_returns_approximate_without_files(tmp_path: Path) -> None:

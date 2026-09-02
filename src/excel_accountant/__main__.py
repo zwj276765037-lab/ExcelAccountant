@@ -38,7 +38,7 @@ def run_self_test() -> int:
 
     from openpyxl import Workbook
 
-    from .service import SearchRequest, run_search
+    from .service import SearchRequest, export_exact_solutions, run_search
 
     with TemporaryDirectory(prefix="excel_accountant_self_test_") as directory:
         root = Path(directory)
@@ -64,7 +64,8 @@ def run_self_test() -> int:
                 approximate_time_limit_seconds=5,
             )
         )
-        if not report.artifacts or not report.artifacts[0].path.is_file():
+        artifacts = export_exact_solutions(report, (0,), root / "output")
+        if not artifacts or not artifacts[0].path.is_file():
             raise RuntimeError("打包自检未生成可验证的精确方案")
     return 0
 

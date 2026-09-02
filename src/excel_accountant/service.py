@@ -115,7 +115,6 @@ def run_search(
         _notify(progress, "cancelled", exact.message)
         return SearchReport(request, preview, targets, problem, exact, messages=tuple(messages))
 
-    artifacts: list[OutputArtifact] = []
     if exact.exact_solutions:
         if not preview.safety.safe_to_write:
             reason_text = "；".join(preview.safety.reasons)
@@ -124,25 +123,10 @@ def run_search(
             )
             _notify(progress, "unsafe", messages[-1])
         else:
-            _notify(
-                progress,
-                "write",
-                f"正在生成并独立校验 {len(exact.exact_solutions)} 个结果文件…",
+            messages.append(
+                f"已找到 {len(exact.exact_solutions)} 套精确方案。"
+                "请勾选需要的方案后再点击输出。"
             )
-            for scheme_number, solution in enumerate(exact.exact_solutions, start=1):
-                if cancel.is_set():
-                    messages.append("输出过程已取消，已完成的文件保留。")
-                    break
-                artifacts.append(
-                    write_exact_solution(
-                        preview,
-                        targets,
-                        solution,
-                        request.output_directory,
-                        scheme_number=scheme_number,
-                    )
-                )
-            messages.append(f"已生成 {len(artifacts)} 个通过复核的 XLSX 文件。")
             _notify(progress, "done", messages[-1])
         return SearchReport(
             request=request,
@@ -150,7 +134,6 @@ def run_search(
             targets=targets,
             scaled_problem=problem,
             exact_outcome=exact,
-            artifacts=tuple(artifacts),
             messages=tuple(messages),
         )
 
@@ -182,3 +165,44 @@ def run_search(
 def _notify(callback: ProgressCallback | None, stage: str, message: str) -> None:
     if callback is not None:
         callback(stage, message)
+
+
+def export_exact_solutions(
+    report: SearchReport,
+    solution_indices: Sequence[int],
+    output_directory: str | Path,
+    *,
+    cancel_event: threading.Event | None = None,
+    progress: ProgressCallback | None = None,
+) -> tuple[OutputArtifact, ...]:
+    if not report.preview.safety.safe_to_write:
+        reasons = "；".join(report.preview.safety.reasons)
+        raise SearchInputError(f"当前工作簿禁止输出：{reasons}")
+    indices = tuple(dict.fromkeys(solution_indices))
+    if not indices:
+        raise SearchInputError("请至少勾选一套精确方案")
+    solution_count = len(report.exact_outcome.exact_solutions)
+    if any(index < 0 or index >= solution_count for index in indices):
+        raise SearchInputError("勾选的方案编号无效，请重新搜索")
+
+    cancel = cancel_event or threading.Event()
+    artifacts: list[OutputArtifact] = []
+    for position, solution_index in enumerate(indices, start=1):
+        if cancel.is_set():
+            break
+        _notify(
+            progress,
+            "export",
+            f"正在输出并复核 {position}/{len(indices)} 套方案…",
+        )
+        artifacts.append(
+            write_exact_solution(
+                report.preview,
+                report.targets,
+                report.exact_outcome.exact_solutions[solution_index],
+                output_directory,
+                scheme_number=solution_index + 1,
+            )
+        )
+    _notify(progress, "done", f"已输出 {len(artifacts)} 个并通过复核的 XLSX 文件。")
+    return tuple(artifacts)

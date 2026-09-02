@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from .decimal_codec import format_decimal
 from .models import ApproximateSolution
 from .service import SearchReport, SearchRequest
-from .worker import SearchWorker
+from .worker import ExportWorker, SearchWorker
 from .xlsx_reader import list_sheet_names, read_workbook_preview
 
 
@@ -45,8 +45,9 @@ class MainWindow(QMainWindow):
         self.resize(1120, 760)
         self.setMinimumSize(900, 620)
         self._thread: QThread | None = None
-        self._worker: SearchWorker | None = None
+        self._worker: SearchWorker | ExportWorker | None = None
         self._last_output_directory: Path | None = None
+        self._last_report: SearchReport | None = None
         self._preview_signature: tuple[str, str, str] | None = None
         self._preview_data = None
         self.setAcceptDrops(True)
@@ -169,6 +170,10 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.cancel_button)
         layout.addLayout(action_row)
 
+        self.export_button = QPushButton("输出勾选方案")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._start_export)
+        layout.addWidget(self.export_button)
         self.open_output_button = QPushButton("打开输出文件夹")
         self.open_output_button.setEnabled(False)
         self.open_output_button.clicked.connect(self._open_output_directory)
@@ -190,9 +195,9 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.preview_summary)
         preview_layout.addWidget(self.preview_table, 1)
 
-        self.result_table = QTableWidget(0, 7)
+        self.result_table = QTableWidget(0, 8)
         self.result_table.setHorizontalHeaderLabels(
-            ("方案", "目标", "目标金额", "实际合计", "差额", "单元格位置", "输出文件")
+            ("选择", "方案", "目标", "目标金额", "实际合计", "差额", "单元格位置", "输出文件")
         )
         self._configure_table(self.result_table)
         result_page = QWidget()
@@ -390,6 +395,10 @@ class MainWindow(QMainWindow):
 
         self.result_table.setRowCount(0)
         self.result_summary.setText("正在搜索…")
+        self._last_report = None
+        self._last_output_directory = None
+        self.export_button.setEnabled(False)
+        self.open_output_button.setEnabled(False)
         self.tabs.setCurrentIndex(1)
         self._set_running(True)
         thread = QThread(self)
@@ -411,6 +420,12 @@ class MainWindow(QMainWindow):
         self.search_button.setEnabled(not running)
         self.preview_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
+        can_export = bool(
+            self._last_report is not None
+            and self._last_report.exact_outcome.exact_solutions
+            and self._last_report.preview.safety.safe_to_write
+        )
+        self.export_button.setEnabled(not running and can_export)
         self.progress_bar.setRange(0, 0 if running else 1)
         if not running:
             self.progress_bar.setValue(0)
@@ -430,7 +445,7 @@ class MainWindow(QMainWindow):
     def _on_failure(self, message: str, _details: str) -> None:
         self.result_summary.setText(f"执行失败：{message}")
         self.status_label.setText("执行失败")
-        self._show_error("搜索失败", message)
+        self._show_error("执行失败", message)
 
     def _search_finished(self) -> None:
         self._thread = None
@@ -441,29 +456,37 @@ class MainWindow(QMainWindow):
 
     def _render_report(self, report: SearchReport) -> None:
         self.result_table.setRowCount(0)
+        self._last_report = report
         self.result_summary.setText("\n".join(report.messages))
-        if report.artifacts:
-            self._last_output_directory = report.request.output_directory
-            self.open_output_button.setEnabled(True)
-            for artifact, solution in zip(
-                report.artifacts,
-                report.exact_outcome.exact_solutions,
-                strict=False,
+        if report.exact_outcome.exact_solutions:
+            for solution_index, solution in enumerate(
+                report.exact_outcome.exact_solutions
             ):
-                for assignment in solution.assignments:
+                for assignment_position, assignment in enumerate(solution.assignments):
                     target = report.targets[assignment.target_index]
                     cells = [report.preview.cells[index] for index in assignment.cell_indices]
-                    self._append_result_row(
+                    row = self._append_result_row(
                         (
-                            f"精确 {artifact.scheme_number:03d}",
+                            "",
+                            f"精确 {solution_index + 1:03d}",
                             target.identifier,
                             target.raw_value,
                             format_decimal(sum((cell.amount for cell in cells), target.amount * 0)),
                             "0",
                             ", ".join(cell.address for cell in cells),
-                            str(artifact.path),
+                            "待勾选输出",
                         )
                     )
+                    scheme_item = self.result_table.item(row, 1)
+                    scheme_item.setData(Qt.ItemDataRole.UserRole, solution_index)
+                    if assignment_position == 0 and report.preview.safety.safe_to_write:
+                        check_item = self.result_table.item(row, 0)
+                        check_item.setText("勾选")
+                        check_item.setFlags(
+                            check_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                        )
+                        check_item.setCheckState(Qt.CheckState.Unchecked)
+                        check_item.setData(Qt.ItemDataRole.UserRole, solution_index)
         elif report.approximate_outcome is not None:
             for number, solution in enumerate(
                 report.approximate_outcome.approximate_solutions,
@@ -484,6 +507,7 @@ class MainWindow(QMainWindow):
             cells = [report.preview.cells[index] for index in assignment.cell_indices]
             self._append_result_row(
                 (
+                    "",
                     f"近似 {number:03d}",
                     target.identifier,
                     target.raw_value,
@@ -494,13 +518,72 @@ class MainWindow(QMainWindow):
                 )
             )
 
-    def _append_result_row(self, values: tuple[str, ...]) -> None:
+    def _append_result_row(self, values: tuple[str, ...]) -> int:
         row = self.result_table.rowCount()
         self.result_table.insertRow(row)
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             item.setToolTip(value)
             self.result_table.setItem(row, column, item)
+        return row
+
+    def _start_export(self) -> None:
+        if self._thread is not None or self._last_report is None:
+            return
+        selected: list[int] = []
+        for row in range(self.result_table.rowCount()):
+            item = self.result_table.item(row, 0)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                selected.append(int(item.data(Qt.ItemDataRole.UserRole)))
+        if not selected:
+            self._show_error("未勾选方案", "请在结果表左侧至少勾选一套精确方案。")
+            return
+        output_text = self.output_edit.text().strip()
+        output_directory = (
+            Path(output_text)
+            if output_text
+            else self._last_report.request.source_path.parent / "ExcelAccountant输出"
+        )
+        self._last_output_directory = output_directory
+        self._set_running(True)
+        self.status_label.setText("正在输出勾选方案…")
+        thread = QThread(self)
+        worker = ExportWorker(self._last_report, tuple(selected), output_directory)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_progress)
+        worker.succeeded.connect(self._on_export_success)
+        worker.failed.connect(self._on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._search_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _on_export_success(self, artifacts: tuple) -> None:
+        by_scheme = {artifact.scheme_number - 1: artifact for artifact in artifacts}
+        for row in range(self.result_table.rowCount()):
+            scheme_item = self.result_table.item(row, 1)
+            if scheme_item is None:
+                continue
+            solution_index = scheme_item.data(Qt.ItemDataRole.UserRole)
+            if solution_index in by_scheme:
+                artifact = by_scheme[solution_index]
+                output_item = QTableWidgetItem(str(artifact.path))
+                output_item.setToolTip(str(artifact.path))
+                self.result_table.setItem(row, 7, output_item)
+                check_item = self.result_table.item(row, 0)
+                if check_item is not None and (
+                    check_item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+                ):
+                    check_item.setCheckState(Qt.CheckState.Unchecked)
+        self.open_output_button.setEnabled(bool(artifacts))
+        message = f"已输出 {len(artifacts)} 个并通过复核的 XLSX 文件。"
+        self.result_summary.setText(self.result_summary.text() + "\n" + message)
+        self.status_label.setText(message)
 
     def _open_output_directory(self) -> None:
         if self._last_output_directory is not None:
