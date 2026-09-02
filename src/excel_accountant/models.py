@@ -121,3 +121,10 @@ class WorkbookPreview:
     safety: WorkbookSafetyReport = field(
         default_factory=lambda: WorkbookSafetyReport(True)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class OutputArtifact:
+    path: Path
+    result_sheet: str
+    scheme_number: int
