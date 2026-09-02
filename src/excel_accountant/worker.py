@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .service import SearchReport, SearchRequest, export_exact_solutions, run_search
+from .service import SearchReport, SearchRequest, export_selected_solutions, run_search
 
 
 class SearchWorker(QObject):
@@ -62,7 +62,7 @@ class ExportWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            artifacts = export_exact_solutions(
+            artifacts = export_selected_solutions(
                 self.report,
                 self.solution_indices,
                 self.output_directory,

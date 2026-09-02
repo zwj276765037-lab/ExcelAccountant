@@ -74,3 +74,51 @@ def test_exact_schemes_render_with_one_checkbox_per_scheme(tmp_path: Path) -> No
     finally:
         window.close()
         application.processEvents()
+
+
+def test_approximate_schemes_are_selectable_for_warned_export(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "流水"
+    worksheet["E1"] = "金额"
+    worksheet["E2"] = "1.00"
+    worksheet["E3"] = "2.00"
+    workbook.save(source)
+    workbook.close()
+    report = run_search(
+        SearchRequest(
+            source,
+            "流水",
+            "E",
+            ("10.00",),
+            tmp_path / "output",
+            max_exact_solutions=2,
+            exact_time_limit_seconds=5,
+            max_approximate_solutions=2,
+            approximate_time_limit_seconds=5,
+        )
+    )
+
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window._render_report(report)
+        window._set_running(False)
+        checkbox_rows = [
+            row
+            for row in range(window.result_table.rowCount())
+            if window.result_table.item(row, 0).flags()
+            & Qt.ItemFlag.ItemIsUserCheckable
+        ]
+        assert len(checkbox_rows) == len(
+            report.approximate_outcome.approximate_solutions
+        )
+        assert window.export_button.isEnabled()
+        assert all(
+            "近似" in window.result_table.item(row, 7).text()
+            for row in checkbox_rows
+        )
+    finally:
+        window.close()
+        application.processEvents()

@@ -17,7 +17,7 @@ from .models import (
 from .solver_approximate import solve_approximate
 from .solver_exact import solve_exact
 from .xlsx_reader import read_workbook_preview
-from .xlsx_writer import write_exact_solution
+from .xlsx_writer import write_approximate_solution, write_exact_solution
 
 ProgressCallback = Callable[[str, str], None]
 
@@ -137,7 +137,7 @@ def run_search(
             messages=tuple(messages),
         )
 
-    _notify(progress, "approximate", "未找到精确方案，正在计算不写入文件的近似备选…")
+    _notify(progress, "approximate", "未找到精确方案，正在计算近似备选…")
     approximate = solve_approximate(
         problem,
         max_solutions=request.max_approximate_solutions,
@@ -146,8 +146,9 @@ def run_search(
     )
     messages.extend(
         (
-            "未输出任何文件。",
+            "搜索阶段未输出任何文件。",
             approximate.message,
+            "近似方案可勾选输出，但实际合计可能不等于目标金额。",
         )
     )
     _notify(progress, "done", " ".join(messages[-2:]))
@@ -206,3 +207,77 @@ def export_exact_solutions(
         )
     _notify(progress, "done", f"已输出 {len(artifacts)} 个并通过复核的 XLSX 文件。")
     return tuple(artifacts)
+
+
+def export_approximate_solutions(
+    report: SearchReport,
+    solution_indices: Sequence[int],
+    output_directory: str | Path,
+    *,
+    cancel_event: threading.Event | None = None,
+    progress: ProgressCallback | None = None,
+) -> tuple[OutputArtifact, ...]:
+    if not report.preview.safety.safe_to_write:
+        reasons = "；".join(report.preview.safety.reasons)
+        raise SearchInputError(f"当前工作簿禁止输出：{reasons}")
+    approximate = report.approximate_outcome
+    if approximate is None:
+        raise SearchInputError("当前搜索结果中没有近似方案")
+    indices = tuple(dict.fromkeys(solution_indices))
+    if not indices:
+        raise SearchInputError("请至少勾选一套近似方案")
+    solution_count = len(approximate.approximate_solutions)
+    if any(index < 0 or index >= solution_count for index in indices):
+        raise SearchInputError("勾选的近似方案编号无效，请重新搜索")
+
+    cancel = cancel_event or threading.Event()
+    artifacts: list[OutputArtifact] = []
+    for position, solution_index in enumerate(indices, start=1):
+        if cancel.is_set():
+            break
+        _notify(
+            progress,
+            "export",
+            f"正在输出并复核近似方案 {position}/{len(indices)}…",
+        )
+        artifacts.append(
+            write_approximate_solution(
+                report.preview,
+                report.targets,
+                report.scaled_problem,
+                approximate.approximate_solutions[solution_index],
+                output_directory,
+                scheme_number=solution_index + 1,
+            )
+        )
+    _notify(
+        progress,
+        "done",
+        f"已输出 {len(artifacts)} 个近似方案文件，请人工复核差额。",
+    )
+    return tuple(artifacts)
+
+
+def export_selected_solutions(
+    report: SearchReport,
+    solution_indices: Sequence[int],
+    output_directory: str | Path,
+    *,
+    cancel_event: threading.Event | None = None,
+    progress: ProgressCallback | None = None,
+) -> tuple[OutputArtifact, ...]:
+    if report.exact_outcome.exact_solutions:
+        return export_exact_solutions(
+            report,
+            solution_indices,
+            output_directory,
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+    return export_approximate_solutions(
+        report,
+        solution_indices,
+        output_directory,
+        cancel_event=cancel_event,
+        progress=progress,
+    )

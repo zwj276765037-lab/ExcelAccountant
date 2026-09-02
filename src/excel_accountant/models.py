@@ -128,3 +128,4 @@ class OutputArtifact:
     path: Path
     result_sheet: str
     scheme_number: int
+    solution_kind: str = "exact"

@@ -4,13 +4,14 @@ import threading
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from excel_accountant.models import SolveStatus
 from excel_accountant.service import (
     SearchInputError,
     SearchRequest,
     export_exact_solutions,
+    export_selected_solutions,
     parse_targets,
     run_search,
 )
@@ -97,6 +98,20 @@ def test_no_exact_solution_returns_approximate_without_files(tmp_path: Path) -> 
     assert report.approximate_outcome.approximate_solutions
     assert not report.artifacts
     assert not output.exists()
+
+    artifacts = export_selected_solutions(report, (0,), output)
+    assert len(artifacts) == 1
+    assert artifacts[0].solution_kind == "approximate"
+    assert "近似方案001" in artifacts[0].path.name
+    workbook = load_workbook(artifacts[0].path, read_only=False, data_only=False)
+    try:
+        result_sheet = workbook[artifacts[0].result_sheet]
+        assert "警告" in result_sheet["A2"].value
+        assert result_sheet["H6"].value == "3.00"
+        assert result_sheet["I6"].value == "-7.00"
+        assert "近似" in result_sheet["K6"].value
+    finally:
+        workbook.close()
 
 
 def test_cancelled_request_does_not_write_files(tmp_path: Path) -> None:

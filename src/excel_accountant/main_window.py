@@ -447,7 +447,13 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(running)
         can_export = bool(
             self._last_report is not None
-            and self._last_report.exact_outcome.exact_solutions
+            and (
+                self._last_report.exact_outcome.exact_solutions
+                or (
+                    self._last_report.approximate_outcome is not None
+                    and self._last_report.approximate_outcome.approximate_solutions
+                )
+            )
             and self._last_report.preview.safety.safe_to_write
         )
         self.export_button.setEnabled(not running and can_export)
@@ -527,10 +533,11 @@ class MainWindow(QMainWindow):
         solution: ApproximateSolution,
         number: int,
     ) -> None:
-        for assignment in solution.assignments:
+        solution_index = number - 1
+        for assignment_position, assignment in enumerate(solution.assignments):
             target = report.targets[assignment.target_index]
             cells = [report.preview.cells[index] for index in assignment.cell_indices]
-            self._append_result_row(
+            row = self._append_result_row(
                 (
                     "",
                     f"近似 {number:03d}",
@@ -539,9 +546,19 @@ class MainWindow(QMainWindow):
                     format_decimal(report.scaled_problem.restore(assignment.actual)),
                     format_decimal(report.scaled_problem.restore(assignment.difference)),
                     ", ".join(cell.address for cell in cells) or "（未使用金额）",
-                    "不输出文件",
+                    "待勾选输出（近似）",
                 )
             )
+            scheme_item = self.result_table.item(row, 1)
+            scheme_item.setData(Qt.ItemDataRole.UserRole, solution_index)
+            if assignment_position == 0 and report.preview.safety.safe_to_write:
+                check_item = self.result_table.item(row, 0)
+                check_item.setText("勾选")
+                check_item.setFlags(
+                    check_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                check_item.setCheckState(Qt.CheckState.Unchecked)
+                check_item.setData(Qt.ItemDataRole.UserRole, solution_index)
 
     def _append_result_row(self, values: tuple[str, ...]) -> int:
         row = self.result_table.rowCount()
@@ -562,8 +579,24 @@ class MainWindow(QMainWindow):
             if item is not None and item.checkState() == Qt.CheckState.Checked:
                 selected.append(int(item.data(Qt.ItemDataRole.UserRole)))
         if not selected:
-            self._show_error("未勾选方案", "请在结果表左侧至少勾选一套精确方案。")
+            self._show_error("未勾选方案", "请在结果表左侧至少勾选一套方案。")
             return
+        is_approximate = bool(
+            not self._last_report.exact_outcome.exact_solutions
+            and self._last_report.approximate_outcome is not None
+        )
+        if is_approximate:
+            answer = QMessageBox.warning(
+                self,
+                "确认输出近似方案",
+                "勾选的是近似方案，实际合计可能不等于目标金额。\n"
+                "输出文件会明确标记实际合计和差额，必须人工复核。\n\n"
+                "确定继续输出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         output_text = self.output_edit.text().strip()
         output_directory = (
             Path(output_text)
@@ -606,7 +639,14 @@ class MainWindow(QMainWindow):
                 ):
                     check_item.setCheckState(Qt.CheckState.Unchecked)
         self.open_output_button.setEnabled(bool(artifacts))
-        message = f"已输出 {len(artifacts)} 个并通过复核的 XLSX 文件。"
+        approximate = bool(
+            artifacts and artifacts[0].solution_kind == "approximate"
+        )
+        message = (
+            f"已输出 {len(artifacts)} 个近似方案文件，请人工复核差额。"
+            if approximate
+            else f"已输出 {len(artifacts)} 个并通过复核的 XLSX 文件。"
+        )
         self.result_summary.setText(self.result_summary.text() + "\n" + message)
         self.status_label.setText(message)
 

@@ -11,15 +11,19 @@ from openpyxl.styles import Font, PatternFill
 
 from .decimal_codec import format_decimal
 from .models import (
+    ApproximateSolution,
     ExactSolution,
     OutputArtifact,
+    ScaledProblem,
     TargetAmount,
     WorkbookPreview,
 )
 from .output_verifier import (
     OutputVerificationError,
     target_color,
+    validate_approximate_solution_structure,
     validate_solution_structure,
+    verify_approximate_output_workbook,
     verify_output_workbook,
 )
 
@@ -127,6 +131,113 @@ def write_exact_solution(
         raise
 
 
+def write_approximate_solution(
+    preview: WorkbookPreview,
+    targets: tuple[TargetAmount, ...],
+    problem: ScaledProblem,
+    solution: ApproximateSolution,
+    output_directory: str | Path,
+    *,
+    scheme_number: int,
+) -> OutputArtifact:
+    if not preview.safety.safe_to_write:
+        reasons = "；".join(preview.safety.reasons)
+        raise UnsafeWorkbookOutputError(f"工作簿禁止输出：{reasons}")
+    if scheme_number < 1:
+        raise ValueError("方案编号必须从 1 开始")
+    validate_approximate_solution_structure(preview, targets, problem, solution)
+
+    source_path = preview.path
+    original_hash = file_sha256(source_path)
+    output_dir = Path(output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = _available_path(
+        output_dir / f"{source_path.stem}_近似方案{scheme_number:03d}.xlsx"
+    )
+    file_handle, temporary_name = tempfile.mkstemp(
+        prefix=".excel_accountant_approximate_",
+        suffix=".xlsx",
+        dir=output_dir,
+    )
+    os.close(file_handle)
+    temporary_path = Path(temporary_name)
+
+    try:
+        shutil.copy2(source_path, temporary_path)
+        workbook = load_workbook(
+            temporary_path,
+            read_only=False,
+            data_only=False,
+            keep_links=True,
+        )
+        try:
+            source_sheet = workbook[preview.sheet]
+            result_sheet_name = _unique_sheet_name(
+                workbook.sheetnames, "近似凑数结果"
+            )
+            result_sheet = workbook.create_sheet(result_sheet_name)
+            _write_approximate_audit_header(result_sheet, scheme_number)
+            for row_index, assignment in enumerate(solution.assignments, start=6):
+                target = targets[assignment.target_index]
+                color = target_color(assignment.target_index)
+                fill = PatternFill(fill_type="solid", fgColor=f"FF{color}")
+                source_cells = [preview.cells[index] for index in assignment.cell_indices]
+                for source_cell in source_cells:
+                    source_sheet[source_cell.address].fill = fill
+                actual = sum(
+                    (cell.amount for cell in source_cells),
+                    start=target.amount * 0,
+                )
+                difference = actual - target.amount
+                if not source_cells:
+                    status = "未分配（近似方案）"
+                elif difference == 0:
+                    status = "精确命中（近似方案）"
+                else:
+                    status = "近似，差额非零"
+                row_values = (
+                    scheme_number,
+                    target.identifier,
+                    target.raw_value,
+                    color,
+                    ", ".join(format_decimal(cell.amount) for cell in source_cells),
+                    ", ".join(cell.address for cell in source_cells),
+                    len(source_cells),
+                    format_decimal(actual),
+                    format_decimal(difference),
+                    format_decimal(abs(difference)),
+                    status,
+                )
+                for column, value in enumerate(row_values, start=1):
+                    result_sheet.cell(row_index, column, value)
+                result_sheet.cell(row_index, 4).fill = fill
+            _format_approximate_audit_sheet(result_sheet)
+            workbook.save(temporary_path)
+        finally:
+            workbook.close()
+
+        verify_approximate_output_workbook(
+            temporary_path,
+            preview,
+            targets,
+            problem,
+            solution,
+            result_sheet_name,
+        )
+        if file_sha256(source_path) != original_hash:
+            raise OutputVerificationError("原始工作簿哈希发生变化")
+        os.replace(temporary_path, final_path)
+        return OutputArtifact(
+            final_path,
+            result_sheet_name,
+            scheme_number,
+            solution_kind="approximate",
+        )
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def _write_audit_header(worksheet, scheme_number: int) -> None:
     worksheet["A1"] = f"ExcelAccountant 凑数结果 - 方案 {scheme_number:03d}"
     worksheet["A1"].font = Font(bold=True, size=14)
@@ -153,6 +264,40 @@ def _format_audit_sheet(worksheet) -> None:
     for index, width in enumerate(widths, start=1):
         worksheet.column_dimensions[worksheet.cell(1, index).column_letter].width = width
     worksheet.freeze_panes = "A5"
+
+
+def _write_approximate_audit_header(worksheet, scheme_number: int) -> None:
+    worksheet["A1"] = (
+        f"ExcelAccountant 近似凑数结果 - 方案 {scheme_number:03d}"
+    )
+    worksheet["A1"].font = Font(bold=True, size=14)
+    worksheet["A2"] = "警告：这是近似方案，实际合计可能不等于目标金额，请人工复核差额。"
+    worksheet["A2"].font = Font(bold=True, color="FFC00000")
+    worksheet["A3"] = "同一文件中每个源单元格最多使用一次。"
+    headers = (
+        "方案编号",
+        "目标编号",
+        "目标金额",
+        "颜色",
+        "组成金额",
+        "单元格地址",
+        "使用数量",
+        "实际合计",
+        "差额",
+        "绝对差额",
+        "复核状态",
+    )
+    for column, value in enumerate(headers, start=1):
+        cell = worksheet.cell(5, column, value)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(fill_type="solid", fgColor="FFFFC7CE")
+
+
+def _format_approximate_audit_sheet(worksheet) -> None:
+    widths = (12, 18, 20, 12, 45, 45, 12, 20, 20, 20, 28)
+    for index, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[worksheet.cell(1, index).column_letter].width = width
+    worksheet.freeze_panes = "A6"
 
 
 def _unique_sheet_name(existing: list[str], base: str) -> str:
