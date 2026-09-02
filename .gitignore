@@ -1,0 +1,25 @@
+# Local financial workbooks and generated outputs
+source/
+output/
+*.xlsx
+*.xlsm
+*.xls
+
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
