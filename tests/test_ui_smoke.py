@@ -22,6 +22,9 @@ def test_main_window_can_be_created_offscreen() -> None:
         assert window.solution_count.value() == 20
         assert window.search_button.isEnabled()
         assert not window.export_button.isEnabled()
+        assert window.preview_button.minimumHeight() >= 32
+        assert window.file_edit.minimumHeight() >= 30
+        assert window.sheet_combo.minimumHeight() >= 30
     finally:
         window.close()
         application.processEvents()

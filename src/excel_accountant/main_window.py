@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -53,6 +54,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._build_ui()
         self._apply_style()
+        self._enforce_control_sizes()
         if initial_file:
             self.file_edit.setText(initial_file)
             self._load_sheets()
@@ -96,6 +98,7 @@ class MainWindow(QMainWindow):
 
     def _build_input_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setMinimumWidth(350)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 12, 0)
         layout.setSpacing(10)
@@ -179,7 +182,13 @@ class MainWindow(QMainWindow):
         self.open_output_button.clicked.connect(self._open_output_directory)
         layout.addWidget(self.open_output_button)
         layout.addStretch(1)
-        return panel
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(panel)
+        scroll.setMinimumWidth(370)
+        return scroll
 
     def _build_data_panel(self) -> QWidget:
         self.tabs = QTabWidget()
@@ -229,11 +238,14 @@ class MainWindow(QMainWindow):
             QGroupBox { background: white; border: 1px solid #dce3eb; border-radius: 8px;
                         margin-top: 10px; padding: 12px 8px 8px 8px; font-weight: 600; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QTableWidget {
+            QLineEdit, QComboBox, QSpinBox {
+                background: white; border: 1px solid #cbd5e1; border-radius: 5px; padding: 3px 6px;
+            }
+            QPlainTextEdit, QTableWidget {
                 background: white; border: 1px solid #cbd5e1; border-radius: 5px; padding: 5px;
             }
             QPushButton { background: #e7edf4; border: 1px solid #c4ceda; border-radius: 5px;
-                          padding: 7px 12px; }
+                          padding: 3px 10px; }
             QPushButton:hover { background: #dae5f0; }
             QPushButton#primary { background: #1769aa; color: white; border-color: #1769aa;
                                   font-weight: 600; padding: 9px 12px; }
@@ -248,6 +260,19 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background: #2b83c6; border-radius: 4px; }
             """
         )
+
+    def _enforce_control_sizes(self) -> None:
+        """Keep text visible under Windows high-DPI and enlarged font settings."""
+
+        for button in self.findChildren(QPushButton):
+            button.setMinimumHeight(32)
+        self.search_button.setMinimumHeight(38)
+        for line_edit in self.findChildren(QLineEdit):
+            line_edit.setMinimumHeight(30)
+        for combo_box in self.findChildren(QComboBox):
+            combo_box.setMinimumHeight(30)
+        for spin_box in self.findChildren(QSpinBox):
+            spin_box.setMinimumHeight(30)
 
     def _browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
