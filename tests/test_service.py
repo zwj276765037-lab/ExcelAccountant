@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+import pytest
+from openpyxl import Workbook
+
+from excel_accountant.models import SolveStatus
+from excel_accountant.service import (
+    SearchInputError,
+    SearchRequest,
+    parse_targets,
+    run_search,
+)
+
+
+def _workbook(path: Path, values: tuple[object, ...]) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "流水"
+    sheet["E1"] = "金额"
+    for row, value in enumerate(values, start=2):
+        sheet.cell(row, 5, value)
+    workbook.save(path)
+    workbook.close()
+
+
+def _request(source: Path, output: Path, *targets: str) -> SearchRequest:
+    return SearchRequest(
+        source_path=source,
+        sheet="流水",
+        range_text="E",
+        target_values=targets,
+        output_directory=output,
+        max_exact_solutions=3,
+        exact_time_limit_seconds=5,
+        max_approximate_solutions=2,
+        approximate_time_limit_seconds=5,
+    )
+
+
+def test_parse_targets_ignores_blank_rows_and_preserves_decimal() -> None:
+    targets = parse_targets((" 10.00 ", "", "-2.345"))
+    assert [item.identifier for item in targets] == ["目标1", "目标2"]
+    assert [str(item.amount) for item in targets] == ["10.00", "-2.345"]
+
+
+def test_parse_targets_rejects_empty_input() -> None:
+    with pytest.raises(SearchInputError, match="至少"):
+        parse_targets(("", "  "))
+
+
+def test_exact_workflow_writes_verified_files(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    _workbook(source, ("1.10", "2.20", "3.30", "4.40"))
+    progress: list[str] = []
+    report = run_search(
+        _request(source, tmp_path / "output", "3.30", "7.70"),
+        progress=lambda stage, _message: progress.append(stage),
+    )
+
+    assert report.exact_outcome.exact_solutions
+    assert report.approximate_outcome is None
+    assert report.artifacts
+    assert all(artifact.path.exists() for artifact in report.artifacts)
+    assert "exact" in progress and "write" in progress and progress[-1] == "done"
+
+
+def test_no_exact_solution_returns_approximate_without_files(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    _workbook(source, ("1.00", "2.00"))
+    output = tmp_path / "output"
+    report = run_search(_request(source, output, "10.00"))
+
+    assert report.exact_outcome.status == SolveStatus.NO_EXACT_PROVED
+    assert report.approximate_outcome is not None
+    assert report.approximate_outcome.approximate_solutions
+    assert not report.artifacts
+    assert not output.exists()
+
+
+def test_cancelled_request_does_not_write_files(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    _workbook(source, ("1.00", "2.00"))
+    cancel = threading.Event()
+    cancel.set()
+    report = run_search(
+        _request(source, tmp_path / "output", "3.00"),
+        cancel_event=cancel,
+    )
+
+    assert report.cancelled
+    assert not report.artifacts
