@@ -4,6 +4,12 @@ ExcelAccountant 是一个完全离线的 Windows 桌面工具：从 XLSX 的一�
 
 这是独立本地软件，不需要 WPS 插件环境。它生成的 `.xlsx` 可用 WPS Office 或 Microsoft Excel 打开。
 
+## 普通用户直接下载
+
+[下载最新版 ExcelAccountant.exe](https://github.com/zwj276765037-lab/ExcelAccountant/releases/latest/download/ExcelAccountant.exe)
+
+下载后双击即可运行，不需要安装 Python、依赖库、WPS 插件或云端服务。软件尚未使用付费代码签名证书；Windows SmartScreen 首次运行时可能显示未知发布者提示。
+
 ## 金额准确性
 
 - 直接从 XLSX 内部 XML 读取已保存的原始数值文本。
